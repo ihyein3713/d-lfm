@@ -1,3 +1,41 @@
+#!/usr/bin/env python
+# Copy of ../../step3_train_flowmatching.py (repo flow-matching trainer), modified for paper_mode.
+# Original: "ICLR 2026 Delta-LFM/step3_train_flowmatching.py". Run from the repo root.
+#
+# Changes, and nothing else:
+#   1. this header and the sys.path setup below;
+#   2. --pm_no_class and --pm_dx_noise are consumed from argv before utils parses it
+#      (utils/options.py belongs to the repo and is not touched), then attached to `args`;
+#   3. --pm_no_class 1 builds the network with num_class_embeds=None and passes class_labels=None,
+#      so the follow-up interval is conditioned only through the CONTINUOUS cond_vec
+#      (Appendix B of the paper: continuous time encoding). The repo instead bins the interval into
+#      whole years with num_class_embeds=15, which also caps the horizon at 14 years;
+#   4. --pm_dx_noise adds zero-mean Gaussian noise to the baseline diagnosis during training
+#      (Appendix F: diagnostic uncertainty is modelled as Gaussian noise on the clinical status).
+# Everything else -- velocity target, [0,T] sampling, history mode, losses -- is selected with the
+# repo's own flags by paper_mode/scripts/train_fm_paper.sh.
+import os as _os
+import sys as _sys
+
+_PM_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_REPO = _os.path.dirname(_os.path.dirname(_PM_DIR))
+for _p in (_REPO, _PM_DIR):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
+_PM = {"no_class": 1.0, "dx_noise": 0.0}
+_PM_COND_MODE = "add"          # "add" = repo additive bias, "adaln" = paper Appendix B
+for _k in list(_PM):
+    _flag = "--pm_" + _k
+    if _flag in _sys.argv:
+        _i = _sys.argv.index(_flag)
+        _PM[_k] = float(_sys.argv[_i + 1])
+        del _sys.argv[_i:_i + 2]
+if "--pm_cond_mode" in _sys.argv:
+    _i = _sys.argv.index("--pm_cond_mode")
+    _PM_COND_MODE = str(_sys.argv[_i + 1])
+    del _sys.argv[_i:_i + 2]
+
 import os, gc, sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -22,6 +60,13 @@ from PIL import Image
 
 from src.model3D import utils_usage as utils  
 from utils import args, import_from_dotted_path, utils_metric
+args.pm_no_class = int(_PM["no_class"])
+args.pm_dx_noise = float(_PM["dx_noise"])
+args.pm_cond_mode = _PM_COND_MODE
+if args.pm_cond_mode == "adaln":
+    # paper Appendix B: AdaLN, not the additive bias the repo config builds
+    args.flowmatching = "adaln_unet.init_large_latent_diffusion_adaln"
+    print("[paper_mode] conditioning = AdaLN (%s)" % args.flowmatching, flush=True)
 
 from src.flow import compute_ut, compute_xt
 
@@ -229,6 +274,11 @@ def _cond_stats(args):
     F = _np.concatenate([dt[:, None], _np.log1p(_np.clip(dt, 0, None))[:, None], V], 1)
     _COND_STATS = {"mean": F.mean(0), "std": F.std(0) + 1e-6}
     return _COND_STATS
+
+def _pm_class(age_gap):
+    """paper_mode: None drops the discrete interval embedding (see the header, change 3)."""
+    return None if int(getattr(args, "pm_no_class", 0)) else age_gap
+
 
 def build_cond_vec(batch, context, DEVICE, args):
     """-> (B, 10) standardized [dt, log1p(dt), age, diagnosis, 5 volumes]"""
@@ -775,6 +825,11 @@ if __name__ == '__main__':
     _x0_cond = int(getattr(args, "fm_x0_cond", 0))       # x0-start flow, x0 as explicit concat condition (8-in/4-out)
     _x0_sn = float(getattr(args, "fm_x0_start_noise", 0.0))  # noisy-x0-start (stochastic interpolant), 8-in/4-out
     _nce = 16 if float(getattr(args, "fm_cfg_dropout", 0.0)) > 0 else 15  # CFG: extra null class slot idx=15
+    if int(getattr(args, "pm_no_class", 0)):
+        # paper_mode: no discrete interval embedding at all; dt reaches the network through cond_vec
+        _nce = None
+        print("[paper_mode] num_class_embeds=None: the interval is conditioned continuously "
+              "(no 15-year cap)", flush=True)
     _echan = 1 if str(getattr(args, "fm_energy_cond", "none")) != "none" else 0  # energy field as extra input channel
     if _res_noise or _x0_cond or _x0_sn > 0:
         _hm = str(getattr(args, "fm_hist_mode", "none"))
@@ -791,7 +846,11 @@ if __name__ == '__main__':
         if _use_gain and _hinj == "gain" and _gm == "none": _hcat = 0
         flowmatching = flowmatching_func(args, in_channels=8 + _echan + _hcat, use_image=False, out_channels=4, num_class_embeds=_nce, cond_dim=_cdim, spade_dim=_sdim).to(DEVICE)
     else:
-        flowmatching = flowmatching_func(args, in_channels=4, use_image=False, num_class_embeds=_nce).to(DEVICE)   # , use_image=False)
+        # paper_mode: the plain flow (z_i -> z_j, --fm_res_noise 0) still needs the continuous
+        # conditioning vector -- start age, interval, sex, diagnosis, volumes (build_cond_vec) --
+        # which the repo only wires into the res-noise / x0-cond builds. Without cond_dim here the
+        # network has no conditioning at all once the discrete interval embedding is off.
+        flowmatching = flowmatching_func(args, in_channels=4, use_image=False, num_class_embeds=_nce, cond_dim=10).to(DEVICE)
     if _res_noise and _use_gain:
         flowmatching.gain_net = _build_gain_net(_gch, DEVICE)   # attached as an attribute so it enters the state_dict
         _gsrc = _gm if _gm != "none" else _hm
@@ -989,6 +1048,11 @@ if __name__ == '__main__':
                 context = torch.concatenate([context, 
                                              followup_age-starting_age,
                                              followup_dia-starting_dia], dim=1).float().unsqueeze(1)  
+                # paper_mode: Gaussian noise on the clinical status during training (Appendix F).
+                # context[:, 0, 2] is the baseline diagnosis, which is also what build_cond_vec reads.
+                _dxn = float(getattr(args, "pm_dx_noise", 0.0))
+                if _dxn > 0.0 and mode == 'train':
+                    context[:, 0, 2] = context[:, 0, 2] + _dxn * torch.randn_like(context[:, 0, 2])
                 if history_encoder is not None and int(getattr(args, "fm_history", 0)):
                     _prior = batch["prior_latent"].to(DEVICE).float() * scale_factor
                     _hp = batch["has_prior"].to(DEVICE).float() if "has_prior" in batch else None
@@ -1181,8 +1245,8 @@ if __name__ == '__main__':
                                 globals()['_CSHUF_SHOWN']=1
                                 print('[cnet_shuffle] control enabled: the ControlNet condition is rolled along the batch dimension (information destroyed; architecture, parameters and training budget unchanged)', flush=True)
                         _cvc = build_cond_vec(batch, context, DEVICE, args)
-                        _dh, _mh = controlnet(x=model_in, timesteps=t, controlnet_cond=_ccond, context=context, class_labels=age_gap)
-                        pred = flowmatching(x=model_in, timesteps=t, context=context, class_labels=age_gap, cond_vec=_cvc, down_block_additional_residuals=_dh, mid_block_additional_residual=_mh)
+                        _dh, _mh = controlnet(x=model_in, timesteps=t, controlnet_cond=_ccond, context=context, class_labels=_pm_class(age_gap))
+                        pred = flowmatching(x=model_in, timesteps=t, context=context, class_labels=_pm_class(age_gap), cond_vec=_cvc, down_block_additional_residuals=_dh, mid_block_additional_residual=_mh)
                     else:
                         _cv = build_cond_vec(batch, context, DEVICE, args)
                         if globals().get("_hpool") is not None:
@@ -1217,7 +1281,7 @@ if __name__ == '__main__':
                                 context = torch.cat([context, eimg_encoder(_et)], dim=1)
                         _spmf = str(getattr(args, "fm_spade_mode", "none"))
                         _spmap = build_hist_cond(batch, x0, scale_factor, DEVICE, _spmf) if _spmf != "none" else None
-                        pred = flowmatching(x=model_in, timesteps=t, context=context, class_labels=age_gap, cond_vec=_cv, spade_map=_spmap)
+                        pred = flowmatching(x=model_in, timesteps=t, context=context, class_labels=_pm_class(age_gap), cond_vec=_cv, spade_map=_spmap)
                         # ---- path consistency (--fm_pathc_w): delta_hat(p1->x1) approx (x0-p1) + delta_hat(x0->x1) ----
                         _pcw = float(getattr(args, "fm_pathc_w", 0.0))
                         _pc_loss = None
@@ -1241,7 +1305,7 @@ if __name__ == '__main__':
                                                    *_mi2.shape[2:], device=_mi2.device, dtype=_mi2.dtype)
                                 _mi2 = torch.cat([_mi2, _pad], dim=1)
                             _pred2 = flowmatching(x=_mi2, timesteps=t, context=context,
-                                                  class_labels=age_gap, cond_vec=_cv, spade_map=_spmap)
+                                                  class_labels=_pm_class(age_gap), cond_vec=_cv, spade_map=_spmap)
                             _dh1 = pred + (0.0 if int(getattr(args, "fm_x0_pred", 0)) else z)
                             _dh2 = _pred2 + (0.0 if int(getattr(args, "fm_x0_pred", 0)) else _z2)
                             _res = _dh2 - (_past + _dh1)
@@ -1428,7 +1492,7 @@ if __name__ == '__main__':
                                 _zj = torch.randn_like(delta)
                                 _xtj = (1.0 - _tt) * _zj + _tt * delta
                                 _pj = flowmatching(x=torch.cat([_xtj, _x0c], dim=1), timesteps=t,
-                                                   context=context, class_labels=age_gap, cond_vec=_cv)
+                                                   context=context, class_labels=_pm_class(age_gap), cond_vec=_cv)
                                 _errs.append(((_pj + _zj) - delta).flatten(1).pow(2).mean(1))
                             _best = torch.stack(_errs, 0).min(0).values                    # penalize only the closest one
                             loss = loss + _best.mean()
@@ -1452,7 +1516,7 @@ if __name__ == '__main__':
                             _z2 = torch.randn_like(delta)
                             _xt2 = (1.0 - _tt) * _z2 + _tt * delta
                             _p2 = flowmatching(x=torch.cat([_xt2, x0], dim=1), timesteps=t, context=context,
-                                               class_labels=age_gap, cond_vec=_cv)
+                                               class_labels=_pm_class(age_gap), cond_vec=_cv)
                             _d1 = (pred + z).flatten(1); _d2 = (_p2 + _z2).flatten(1)
                             _rel = (_d1 - _d2).norm(dim=1) / (_d1.norm(dim=1) + 1e-6)   # relative difference
                             loss = loss + _divw * torch.relu(0.5 - _rel).mean()          # penalized when too similar
@@ -1674,7 +1738,7 @@ if __name__ == '__main__':
                                     _xt = (1.0 - _tv) * _zc + _tv * _tgt_guess
                                     _mi = torch.cat([_xt, _anchor], dim=1)
                                     _pv = flowmatching(x=_mi, timesteps=_tc, context=context,
-                                                       class_labels=age_gap, cond_vec=_cvb)
+                                                       class_labels=_pm_class(age_gap), cond_vec=_cvb)
                                     return _pv + _zc                      # implied delta_hat
                                 _da = _idelta(_p1, x0 - _p1)              # p1 -> x0
                                 _db = _idelta(x0,  x1 - x0)               # x0 -> x1

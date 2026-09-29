@@ -1,0 +1,52 @@
+NOTE Delta-LFM splits by md5 hash (step1: 'ap|', step3/eval: split_v3 'v3|') and does not read the
+     `split` column; the loaders need a patch to follow the split files.
+
+discovered 2066 complete scans / 263 subjects; incomplete dirs skipped: 1 ['114_S_6063/I11088545']
+QC exclusion (custom/adni_qc_failed.csv): dropped 4/4 listed scans
+preprocess log: acquisition date for 2062/2062 scans
+  2 scans have complete outputs but no 'ok' log entry, kept: ['I146223', 'I146224']
+PTDEMOG: 4858 subjects with sex, 4856 with DOB; conflicting records across visits: sex 1, DOB 56 (mode / earliest record used)
+same-day dedup: 2062 scans -> 1127 visits (earliest acquisition time, as in the Delta-LFM loader)
+split: 158/263 of our subjects are in the split; 105 subjects not in any split file dropped, e.g. ['002_S_2043', '003_S_6924', '005_S_10288', '005_S_10421', '005_S_5119']
+  visits of split subjects not listed in the split (e.g. <30 day gap): 188 dropped
+  listed visits of our subjects with no processed scan: 5 ['126_S_4891_MR_2018-07-27', '126_S_4891_MR_2019-08-14', '126_S_4891_MR_2021-07-14', '126_S_4891_MR_2022-07-15', '126_S_4891_MR_2023-07-19']
+links: 1506 created under /mnt/aix22308/longi_v2/d_lfm/ICLR 2026 Delta-LFM/paper_mode/data/Image (visit folder = date)
+volumes: 753 computed, 0 from cache (adni_volumes_raw.csv)
+volume min-max reference: train (538 visits); val/test visits outside [0,1] in a conditioning region: 0
+pairs: 1945 (all i<j)
+  drop dt==0: 0
+  dt filter [None, None] months: 1945 -> 1945
+
+=== validation ===
+[1] t1 exists 753/753, seg exists 753/753
+[2] subjects 158, visits 753, pairs 1945; subjects with >=3 visits 133 (step1 min_timepoints=3), 2 visits 25, 1 visit 0
+    train: 116 subjects, 538 visits, 1322 pairs
+    val  : 18 subjects, 92 visits, 246 pairs
+    test : 24 subjects, 123 visits, 377 pairs
+[3] age 56.4-94.7 y; follow_up 0-236.7 months; follow_up monotone in capture_time: True; duplicate (subject, follow_up): 0
+    pair dt months: min 1.1, median 29.4, max 236.7; pair age range 0.564-0.947 (/100)
+[4] diagnosis unmatched 0/753 (0.0%); distribution {'CN': 320, 'MCI': 315, 'AD': 118}; sex (F=0, M=1) {0.0: 360, 1.0: 393}
+    nearest EXAMDATE gap days: median 7, p90 32, max 729
+    vs split audit (subject_audit.csv, 158 subjects): dx_first agree 96.2%, dx_last agree 97.5%, split agree 100.0%
+    NaN in pair context columns: 0
+[4b] age_gap = int((followup_age - starting_age) * 100), the class index of the flow model: max 19, pairs >= num_class_embeds (15): 6
+    ERROR these pairs index past the class embedding and abort training with a CUDA device-side assert; filter them with --max_dt_months (180 keeps every gap <= 14)
+[5] current loader --split_v3 1 (md5 hash): train 127 subj / 1388 rows, test 31 subj / 557 rows
+    split files vs split_v3 hash (pair rows):
+      starting_image_path  hash_test  hash_train
+      split                                     
+      test                        87         290
+      train                      344         978
+      val                        126         120
+    rows 0..80% (row-wise split and _cond_stats): {'train': 1322, 'val': 234}; last 20%: {'test': 377, 'val': 12}
+[6] geometry check on 6 random visits (pad/crop to (128, 144, 128))
+    ADNI_021_S_6940/2023-11-28: shape (121, 145, 121) spacing (1.5, 1.5, 1.5) OK; brain kept True, min margin to border (vox) [14, 8, 3]; background after ScaleIntensity 0.087 (0 expected)
+    ADNI_072_S_4226/2012-04-20: shape (121, 145, 121) spacing (1.5, 1.5, 1.5) OK; brain kept True, min margin to border (vox) [12, 9, 3]; background after ScaleIntensity 0.153 (0 expected)
+    ADNI_041_S_0314/2008-04-14: shape (121, 145, 121) spacing (1.5, 1.5, 1.5) OK; brain kept True, min margin to border (vox) [14, 11, 3]; background after ScaleIntensity 0.086 (0 expected)
+    ADNI_023_S_0031/2012-09-20: shape (121, 145, 121) spacing (1.5, 1.5, 1.5) OK; brain kept True, min margin to border (vox) [13, 10, 3]; background after ScaleIntensity 0.123 (0 expected)
+    ADNI_002_S_6103/2019-12-19: shape (121, 145, 121) spacing (1.5, 1.5, 1.5) OK; brain kept True, min margin to border (vox) [14, 8, 3]; background after ScaleIntensity 0.086 (0 expected)
+    ADNI_128_S_0272/2014-05-29: shape (121, 145, 121) spacing (1.5, 1.5, 1.5) OK; brain kept True, min margin to border (vox) [14, 9, 3]; background after ScaleIntensity 0.130 (0 expected)
+[7] pair paths found in All-abs: starting 100.0%, followup 100.0%
+
+written to /mnt/aix22308/longi_v2/d_lfm/ICLR 2026 Delta-LFM/paper_mode/data/derived: AD-Progression-All.csv, AD-Progression-All-abs.csv, AD-Progression-pairs-dt15.csv
+next: DERIVED_DIR=/mnt/aix22308/longi_v2/d_lfm/ICLR 2026 Delta-LFM/paper_mode/data/derived python build_multiprior.py

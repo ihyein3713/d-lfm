@@ -1,0 +1,47 @@
+
+# Model
+diffusion: vit
+task: all
+
+
+
+
+# Numueric Definition
+dim: 3
+channel: 3
+# image_size: [80, 80, 80]  #[64, 64, 64]  # (128, 144, 128)
+
+image_size: [64, 64, 64]   # MAISI (x4, tiled) only round-trips cubes here: (64,64,64)->latent (4,16,16,16); (64,72,64) gets cropped to 64
+
+
+# Boolen Definition
+extract_latent: true
+load_latent: false
+
+
+dataset_csv: derived/AD-Progression-All.csv   # paper_mode: our ADNI per-visit table (relative to data_dir)
+
+
+# Step 1 Train Autoencoder
+temp_path:   ${WORK_DIR}
+
+latent_path: disease_progression_latents/all_2D_fused      # {temp_path}/{latent_path}
+output_dir:  ae_paper                                       # {temp_path}/{output_dir}
+cache_dir:   ae_cache_dir                                   # {temp_path}/{cache_dir}
+
+
+
+
+# Define the model
+dataloader:  ad_progression   # use dataset.ad_progression_3D_triplet (flat AD-Progression CSV -> triplets)
+autoencoder: src.autoencoder.MAISI_Unet3D.init_autoencoder
+original_autoencoder: src.autoencoder.MAISI_Unet3D.init_autoencoder
+
+
+
+# paper_mode notes (arXiv 2512.09185v4, Appendix C):
+#   image_size [64,64,64] with --crop_mode patch is the paper's default training crop (64^3),
+#   and the MAISI autoencoder this repo instantiates already has num_channels [64,128,256],
+#   which is the paper's default capacity. So no architecture change is needed here; the only
+#   difference from the repo recipe is the crop (64^3 patch instead of a 112^3 whole-brain resize,
+#   i.e. --res_scale is left off).

@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------
+# d_lfm repository gitignore
+# Keeps code / configs / docs tracked, drops training artifacts.
+# ---------------------------------------------------------------
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Model weights and checkpoints ---
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+models/
+
+# --- Volumetric / array dumps ---
+*.npy
+*.npz
+*.nii
+*.nii.gz
+*.mgz
+*.h5
+*.hdf5
+*.pkl
+
+# --- Experiment output trees (matched at any depth:
+#     /outputs, ICLR 2026 Delta-LFM/ae_runs, paper_mode/outputs, ...) ---
+outputs/
+ae_runs/
+runs/
+image_result/
+oasis_fm_samples*/
+wandb/
+lightning_logs/
+tb_logs/
+
+# --- Raw / linked imaging data ---
+data/Image/
+
+# --- Logs and job leftovers ---
+*.log
+nohup.out
+slurm-*.out
+core.*
+
+# --- Large reference material ---
+*.pdf

@@ -37,7 +37,7 @@ from monai.transforms import (
     RandFlipD, CropForegroundD, RandSpatialCropD, CenterSpatialCropD,
 )
 
-from .utils.utils import concat_covariates, get_dataset_from_pd
+from .utils.utils import concat_covariates, get_dataset_from_pd, split_mask
 from .utils import const
 
 
@@ -66,7 +66,18 @@ def _resolve_data_root(data_dir: str) -> str:
     return data_dir
 
 
-def build_triplets(csv_path, data_root, strict_time=True, min_tp=3):
+def _subject_split(df, split_col):
+    """subject -> split label from `split_col`; every visit of a subject must share one label."""
+    if split_col not in df.columns:
+        raise KeyError("--split_col %s: column not found in the per-visit CSV" % split_col)
+    n = df.groupby("subject_id")[split_col].nunique(dropna=False)
+    if (n > 1).any():
+        raise ValueError("--split_col %s: subjects with visits in more than one split: %s"
+                         % (split_col, n[n > 1].index.tolist()[:10]))
+    return df.groupby("subject_id")[split_col].first().astype(str)
+
+
+def build_triplets(csv_path, data_root, strict_time=True, min_tp=3, split_col=""):
     """Flat per-timepoint CSV -> per-patient time-ordered triplet DataFrame.
 
     Returns a DataFrame with one row per triplet and the columns the Step-1
@@ -79,6 +90,7 @@ def build_triplets(csv_path, data_root, strict_time=True, min_tp=3):
     # map subject string id -> stable integer index (needed by the loss / ids)
     uniq = sorted(df["subject_id"].unique())
     sid2idx = {s: i for i, s in enumerate(uniq)}
+    sid2split = _subject_split(df, split_col) if split_col else None
 
     def _abs(p):
         return os.path.join(data_root, str(p))
@@ -115,6 +127,8 @@ def build_triplets(csv_path, data_root, strict_time=True, min_tp=3):
                 "followup_follow_up": float(r1["follow_up"]),
                 "followup2_follow_up": float(r2["follow_up"]),
             }
+            if sid2split is not None:
+                rec["split"] = sid2split[sid]
             # covariates from the starting visit (context for later steps)
             rec["sex"] = float(r0.get("sex", 0.5))
             rec["starting_diagnosis"] = float(r0.get("diagnosis", -1))
@@ -136,8 +150,14 @@ def build_triplets(csv_path, data_root, strict_time=True, min_tp=3):
     return tdf
 
 
-def _split_by_patient(tdf, mode, ratio=0.8):
-    """Patient-disjoint train/test split (no timepoint leakage across the split)."""
+def _split_by_patient(tdf, mode, ratio=0.8, split_col="", split_val="drop"):
+    """Patient-disjoint train/test split (no timepoint leakage across the split).
+    With split_col, the per-subject `split` column (from the CSV) is used instead of the hash."""
+    if split_col:
+        keep = split_mask(tdf["split"], mode, split_val)
+        print("[split_col] column=%s mode=%s val->%s -> %d rows / %d patients"
+              % (split_col, mode, split_val, int(keep.sum()), tdf.loc[keep, "subject_str"].nunique()), flush=True)
+        return tdf[keep].reset_index(drop=True)
     pats = np.array(sorted(tdf["subject_str"].unique()))
     # deterministic shuffle by an md5 of the id. The built-in hash() is salted per process for str,
     # so it would change the train/test split between runs.
@@ -195,6 +215,8 @@ def get_visit_dataset(args, mode="test", min_visits=3):
     data_root = _resolve_data_root(args.data_dir)
     uniq = sorted(df["subject_id"].unique())
     sid2idx = {s: i for i, s in enumerate(uniq)}
+    split_col = str(getattr(args, "split_col", "") or "")
+    sid2split = _subject_split(df, split_col) if split_col else None
 
     rows = []
     for sid, g in df.groupby("subject_id"):
@@ -203,14 +225,18 @@ def get_visit_dataset(args, mode="test", min_visits=3):
         if len(g) < min_visits:
             continue
         for _, r in g.iterrows():
-            rows.append({
+            row = {
                 "image": os.path.join(data_root, str(r["image_path"])),
                 "subject_id": sid2idx[sid],
                 "subject_str": sid,
                 "follow_up": float(r["follow_up"]),
-            })
+            }
+            if sid2split is not None:
+                row["split"] = sid2split[sid]
+            rows.append(row)
     vdf = pd.DataFrame(rows)
-    vdf = _split_by_patient(vdf.assign(subject_str=vdf["subject_str"]), mode)
+    vdf = _split_by_patient(vdf.assign(subject_str=vdf["subject_str"]), mode, split_col=split_col,
+                            split_val=str(getattr(args, "split_val", "drop")))
     if getattr(args, "DEBUG", False):
         keep = vdf["subject_str"].drop_duplicates().iloc[:8]
         vdf = vdf[vdf["subject_str"].isin(keep)].reset_index(drop=True)
@@ -231,9 +257,10 @@ def get_brain_dataset(args, mode="train", pair=True, with_image=True, with_laten
     RESOLUTION = 1.5
 
     data_root = _resolve_data_root(args.data_dir)
+    split_col = str(getattr(args, "split_col", "") or "")
     tdf = build_triplets(_resolve_csv(args), data_root,
-                         min_tp=int(getattr(args, "min_timepoints", 3) or 3))
-    tdf = _split_by_patient(tdf, mode)
+                         min_tp=int(getattr(args, "min_timepoints", 3) or 3), split_col=split_col)
+    tdf = _split_by_patient(tdf, mode, split_col=split_col, split_val=str(getattr(args, "split_val", "drop")))
 
     if getattr(args, "DEBUG", False):
         tdf = tdf.iloc[:10].reset_index(drop=True)

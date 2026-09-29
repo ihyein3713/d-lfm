@@ -1,8 +1,39 @@
+#!/usr/bin/env python
+# Copy of ../../step1_v2_axes.py (repo autoencoder trainer), modified for paper_mode.
+# Original: "ICLR 2026 Delta-LFM/step1_v2_axes.py". Run from the repo root.
+#
+# Changes, and nothing else:
+#   1. this header and the sys.path setup below;
+#   2. --pm_arc / --pm_rank / --pm_margin are consumed from argv before utils parses it
+#      (utils/options.py belongs to the repo and is not touched), then attached to `args`;
+#   3. the paper ArcRank loss (paper_mode/src/arcrank_paper.py, Sec. 3.2 of the paper) is added
+#      right after the repo's own trajectory-loss block.
+# The repo trajectory terms stay available but are left at 0 by the paper_mode scripts.
+import os as _os
+import sys as _sys
+
+_PM_DIR = _os.path.dirname(_os.path.abspath(__file__))          # paper_mode/src
+_REPO = _os.path.dirname(_os.path.dirname(_PM_DIR))             # repo root
+for _p in (_REPO, _PM_DIR):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
+_PM = {"arc": 0.0, "rank": 0.0, "margin": 0.05}
+for _k in list(_PM):
+    _flag = "--pm_" + _k
+    if _flag in _sys.argv:
+        _i = _sys.argv.index(_flag)
+        _PM[_k] = float(_sys.argv[_i + 1])
+        del _sys.argv[_i:_i + 2]
+
+from arcrank_paper import arcrank_loss as pm_arcrank_loss
+
 import os, gc, sys
 
 # self-contained: resolve src/ utils/ dataset/ from THIS folder, not the parent repo
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from utils import args
+args.pm_arc, args.pm_rank, args.pm_margin = _PM["arc"], _PM["rank"], _PM["margin"]
 
 if 'LOCAL_RANK' not in os.environ:  # single-proc: honor --gpu; under accelerate multi-proc let it assign devices
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -828,6 +859,20 @@ if __name__ == '__main__':
                         margin=getattr(args, "traj_margin", 0.1),
                         move_floor=getattr(args, "move_floor", 0.0))
                     loss_g = loss_g + _ramp * traj_loss
+
+                # ---- paper_mode: ArcRank loss as defined in the paper (Sec. 3.2) ----
+                if float(getattr(args, "pm_arc", 0.0)) > 0 or float(getattr(args, "pm_rank", 0.0)) > 0:
+                    _pm_loss, _pm_parts = pm_arcrank_loss(
+                        z_mu, patient_time, n_visits=3,
+                        lam_arc=float(getattr(args, "pm_arc", 0.0)),
+                        lam_rank=float(getattr(args, "pm_rank", 0.0)),
+                        margin=float(getattr(args, "pm_margin", 0.05)))
+                    loss_g = loss_g + _pm_loss
+                    traj_parts.update({"pm_" + _k: _v for _k, _v in _pm_parts.items()})
+                    if not globals().get("_PM_SHOWN"):
+                        globals()["_PM_SHOWN"] = 1
+                        print("[paper_mode] ArcRank ON  lam_arc=%.4g lam_rank=%.4g margin=%.4g"
+                              % (args.pm_arc, args.pm_rank, args.pm_margin), flush=True)
 
                 # Independent switches: each trajectory loss is controlled by its own weight and does not require the --use_contrastive master switch.
                 #   (use_contrastive is retained for backward compatibility.)

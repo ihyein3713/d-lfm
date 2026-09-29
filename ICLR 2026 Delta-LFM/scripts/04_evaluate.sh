@@ -13,7 +13,7 @@ python eval_fm.py \
   --res_scale "$RES_SCALE" --norm_mode std --cache_dir none \
   --fm_scheme std --fm_scale_norm 0 --fm_res_noise 1 \
   --fm_mask_lambda 5 --fm_mask_mode soft --fm_mask_src latent \
-  --fm_hist_mode "prev1+prev2" --split_v3 1 --test_part "$PART" \
+  --fm_hist_mode "prev1+prev2" $SPLIT_ARGS --test_part "$PART" \
   --fm_ckpt "$WORK_DIR/fm_rectified/fm-unet-ep-${EP}.pth" \
   "${SAMP[@]}" --fm_seed 1234 --fm_sigma 0 --batch_size 1 --num_workers 1 \
   --n_eval "$N" --raw_out 1 --dump_pred "$WORK_DIR/pred_ep${EP}_${PART}" --tag "ep${EP}_${PART}"

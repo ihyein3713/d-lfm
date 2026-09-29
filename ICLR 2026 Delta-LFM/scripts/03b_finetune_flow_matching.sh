@@ -13,7 +13,7 @@ python step3_train_flowmatching.py "${X0[@]}" \
   --res_scale "$RES_SCALE" --norm_mode std --cache_dir none \
   --fm_scheme std --fm_scale_norm 0 --fm_res_noise 1 \
   --fm_mask_lambda 5 --fm_mask_mode soft --fm_mask_src latent \
-  --fm_hist_mode "prev1+prev2" --split_v3 1 \
+  --fm_hist_mode "prev1+prev2" $SPLIT_ARGS \
   --fm_rf1_w 0.0 --fm_cf1_w 0.5 --fm_dir_w 0.0 \
   --fm_flowinit_sigma "$SIGMA" \
   --batch_size 8 --lr 2.5e-5 --n_epochs 10

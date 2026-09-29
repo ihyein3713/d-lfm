@@ -9,7 +9,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 from monai import transforms
 import torch
-from .utils.utils import concat_covariates, ReindexSegmentation, ResizeWithAspectRatioAndPad, get_dataframe, get_dataset_from_pd
+from .utils.utils import concat_covariates, ReindexSegmentation, ResizeWithAspectRatioAndPad, get_dataframe, get_dataset_from_pd, split_mask
 
 from monai.transforms import (EnsureChannelFirstD, SpacingD, ResizeWithPadOrCropD, ScaleIntensityD, RandRotateD,
                               RandFlipD,
@@ -235,7 +235,21 @@ def get_dataframe(args, mode):
         dataset_df["sex"] = 0.5  # fallback used only when the sex column is missing
 
     ratio = 0.8
-    if int(getattr(args, 'split_v3', 0)):
+    _scol = str(getattr(args, 'split_col', '') or '')
+    if _scol:
+        # split taken from a CSV column (train/val/test), e.g. a benchmark split shared with other methods
+        if _scol not in dataset_df.columns:
+            raise KeyError("--split_col %s: column not found in %s" % (_scol, args.dataset_csv))
+        if int(getattr(args, 'split_v3', 0)) or int(getattr(args, 'split_v2', 0)):
+            print("[split_col] --split_col overrides --split_v3/--split_v2", flush=True)
+        _sv = str(getattr(args, 'split_val', 'drop'))
+        train_df = dataset_df[split_mask(dataset_df[_scol], mode, _sv)].reset_index(drop=True)
+        _sc = train_df['starting_image_path'].map(lambda x: str(x).split('/')[-3])
+        from collections import Counter as _Ctc
+        print("[split_col] column=%s mode=%s val->%s -> %d rows / %d patients %s"
+              % (_scol, mode, _sv, len(train_df), _sc.nunique(),
+                 dict(_Ctc(train_df[_scol].astype(str)))), flush=True)
+    elif int(getattr(args, 'split_v3', 0)):
         # split each cohort 8:2 by patient, so all three cohorts have an in-distribution test partition
         import hashlib as _hl3
         _sid3 = dataset_df['starting_image_path'].map(lambda x: str(x).split('/')[-3])

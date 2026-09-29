@@ -79,7 +79,7 @@ def load_if(checkpoints_path: Optional[str], network: nn.Module) -> nn.Module:
 
 
 
-def init_autoencoder(checkpoints_path: Optional[str] = None) -> nn.Module:
+def init_autoencoder(checkpoints_path: Optional[str] = None, args_ns=None) -> nn.Module:
     """
     Load the KL autoencoder (pretrained if `checkpoints_path` points to previous params).
 
@@ -116,6 +116,13 @@ def init_autoencoder(checkpoints_path: Optional[str] = None) -> nn.Module:
         _ad = args.autoencoder_def
         _ad["num_splits"] = 1
         _ad["norm_float16"] = False
+        # --ae_checkpointing 1: recompute activations in the backward pass (same result, less memory).
+        # checkpoints_path carries the caller's argparse namespace here, as in the other init_* helpers.
+        _ns = args_ns if args_ns is not None else checkpoints_path
+        _ck = int(getattr(_ns, "ae_checkpointing", 0) or 0)
+        if _ck:
+            _ad["use_checkpointing"] = True
+            print("[init_autoencoder] activation checkpointing ON", flush=True)
     except Exception as _e:
         print("[init_autoencoder] could not override num_splits/norm_float16:", _e)
     autoencoder  = define_instance(args, "autoencoder_def")# .to(device)

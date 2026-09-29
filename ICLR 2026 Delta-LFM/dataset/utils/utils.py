@@ -62,6 +62,30 @@ def get_dataset_from_pd(df: pd.DataFrame, transforms_fn: Transform, cache_dir: O
         else PersistentDataset(data=data, transform=transforms_fn, cache_dir=cache_dir)
 
 
+def split_mask(labels: pd.Series, mode: str, split_val: str = "drop") -> pd.Series:
+    """Rows selected for `mode` when the split comes from a CSV column (--split_col).
+
+    labels holds train / val / test per row. mode is train | val | test | test_all.
+    split_val decides where the val rows go for train/test: drop (default), train or test.
+    """
+    lab = labels.astype(str).str.strip().str.lower()
+    unknown = sorted(set(lab.unique()) - {"train", "val", "test"})
+    if unknown:
+        raise ValueError(f"--split_col: unexpected split labels {unknown}; expected train/val/test")
+    if split_val not in ("drop", "train", "test"):
+        raise ValueError(f"--split_val must be drop, train or test, got {split_val!r}")
+    if mode == "test_all":
+        return pd.Series(True, index=labels.index)
+    if mode == "val":
+        return lab == "val"
+    if mode in ("train", "test"):
+        m = lab == mode
+        if split_val == mode:
+            m = m | (lab == "val")
+        return m
+    raise ValueError("Invalid mode. Choose 'train', 'val', 'test', or 'test_all'.")
+
+
 
 
 

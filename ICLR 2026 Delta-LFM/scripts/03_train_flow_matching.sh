@@ -11,7 +11,7 @@ python step3_train_flowmatching.py "${X0[@]}" \
   --aekl_ckpt "${AE_CKPT:?export AE_CKPT=\$WORK_DIR/ae/all-ae-<EP>-3D.pth}" --output_dir fm_base \
   --res_scale "$RES_SCALE" --norm_mode std --cache_dir none \
   --fm_scheme std --fm_scale_norm 0 --fm_res_noise 1 \
-  --fm_hist_mode "prev1+prev2" --split_v3 1 \
+  --fm_hist_mode "prev1+prev2" $SPLIT_ARGS \
   --fm_mask_lambda 0 --fm_rf1_w 0.0 --fm_cf1_w 0.0 --fm_dir_w 0.0 \
   --fm_flowinit_sigma "$SIGMA" \
   --batch_size 8 --lr 2.5e-5 --n_epochs 30

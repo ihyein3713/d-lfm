@@ -14,4 +14,4 @@ python step1_v2_axes.py \
   --aug_rigid 3 --aug_rot_deg 5 --adv_warmup 400 --adv_ramp 1200 \
   --ae_chgrec_w 0.3 --ae_dircosE_w 0.3 \
   --save_every 1 --eval_steps 250 --lin_max_batches 8 --eval_every 99 \
-  --n_epochs 30 --steps_per_epoch 2000 "${ARC[@]}"
+  --n_epochs 30 --steps_per_epoch 2000 "${ARC[@]}" $AE_SPLIT_ARGS

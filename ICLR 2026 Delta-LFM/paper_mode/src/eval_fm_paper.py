@@ -1,3 +1,34 @@
+#!/usr/bin/env python
+# Copy of ../../eval_fm.py (repo evaluator), modified for paper_mode. Run from the repo root.
+#
+# Changes, and nothing else:
+#   1. this header and the sys.path setup below, so paper_mode/src modules are importable;
+#   2. --pm_dt_step: the Euler step size in YEARS. The paper fixes dt = 0.01 and derives the step
+#      count per case, N = (t_j - t_i) / dt (eq 14), while the repo uses one fixed --infer_steps for
+#      every case. With --pm_dt_step > 0 the step count is computed per batch from the real interval
+#      (batch_size 1 in evaluation, so this is exactly per case). 0 keeps the repo behaviour.
+#   3. the paper metrics (Delta-RMAE, Region MAE) are added to every result JSON.
+import os as _os
+import sys as _sys
+
+_PM_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_REPO = _os.path.dirname(_os.path.dirname(_PM_DIR))
+for _p in (_REPO, _PM_DIR):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+
+_PM_DT_STEP = 0.01
+if "--pm_dt_step" in _sys.argv:
+    _i = _sys.argv.index("--pm_dt_step")
+    _PM_DT_STEP = float(_sys.argv[_i + 1])
+    del _sys.argv[_i:_i + 2]
+
+_PM_COND_MODE = "add"
+if "--pm_cond_mode" in _sys.argv:
+    _i = _sys.argv.index("--pm_cond_mode")
+    _PM_COND_MODE = str(_sys.argv[_i + 1])
+    del _sys.argv[_i:_i + 2]
+
 """Δ-LFM Step-3 flow-matching EVALUATION harness.
 
 Generates followup latents from starting latents on the held-out TEST split
@@ -98,6 +129,10 @@ if _eval_args.fm_flowinit_sigma is None:
               "A mismatch with the training value changes the sampled amplitude.", flush=True)
 
 from utils.options import args
+if _PM_COND_MODE == "adaln":
+    # rebuild the same architecture the AdaLN training run saved
+    args.flowmatching = "adaln_unet.init_large_latent_diffusion_adaln"
+    print("[paper_mode] conditioning = AdaLN (%s)" % args.flowmatching, flush=True)
 # Flags from the pre-parser (_pre) are copied onto args, otherwise they are not visible when the model is built
 # and the input-channel count can disagree with the checkpoint (conv_in shape mismatch on load)
 for _k, _v in vars(_eval_args).items():
@@ -925,7 +960,9 @@ def main():
     if _res_noise or _x0_cond or _x0_sn > 0:
         flowmatching = import_from_dotted_path(args.flowmatching)(args, in_channels=8 + _echan_eval + (_EHCH if _EINJ in ('concat','both') else 0), use_image=False, out_channels=4, num_class_embeds=_nce_eval, cond_dim=_ECDIM).to(DEVICE)
     else:
-        flowmatching = import_from_dotted_path(args.flowmatching)(args, in_channels=4, use_image=False, num_class_embeds=_nce_eval).to(DEVICE)
+        # paper_mode: matches the training build above (cond_dim=10), otherwise the checkpoint
+        # of a paper-setting run cannot be loaded.
+        flowmatching = import_from_dotted_path(args.flowmatching)(args, in_channels=4, use_image=False, num_class_embeds=_nce_eval, cond_dim=10).to(DEVICE)
     fw = remove_module_prefix(torch.load(_eval_args.fm_ckpt, map_location="cpu"))
     _gm_e = str(getattr(args, "fm_gain_mode", "none"))
     if _gm_e != "none" or str(getattr(args, "fm_hist_inject", "concat")) == "gain":
@@ -1034,6 +1071,12 @@ def main():
         age_gap = ((batch["followup_age"] - batch["starting_age"]).to(DEVICE).float() * 100).long()
         dt_vec = (batch["followup_follow_up"].to(DEVICE).float()
                   - batch["starting_follow_up"].to(DEVICE).float()) / 10.0
+        # paper_mode: N = (t_j - t_i) / dt with dt = --pm_dt_step years (paper eq 14).
+        # dt_vec is the interval in months/10, so years = dt_vec * 10 / 12.
+        _pm_steps = int(_eval_args.infer_steps)
+        if _PM_DT_STEP > 0:
+            _yrs_pm = float((dt_vec.float() * 10.0 / 12.0).max().item())
+            _pm_steps = max(1, int(round(_yrs_pm / _PM_DT_STEP)))
 
         _energy = None
         _ecm = str(getattr(args, "fm_energy_cond", "none"))
@@ -1250,14 +1293,14 @@ def main():
                 _cvk = build_cond_vec(_b, context, DEVICE, args)
                 _hk = build_hist_cond(_b, _z_cur * scale_factor, scale_factor, DEVICE, _hm_e) if _hm_e != 'none' else _hcat
                 _z_nx = sample(flowmatching, autoencoder, _z_cur, context, age_gap, scale_factor,
-                               args.fm_scheme, dt_vec / _K, _eval_args.infer_steps, _gain_cond=_gcond, res_noise=_res_noise, x0_cond=_x0_cond, x0_start_noise=_x0_sn, cfg_w=_cfg_w, n_avg=_eval_args.n_avg, subspace=_sub, delta_scale=_eval_args.fm_delta_scale, energy=_energy, postmask=_postmask, controlnet=controlnet, cnet_prior=_cnet_prior, cond_vec=_cvk, hist_cat=_hk, return_latent=True)
+                               args.fm_scheme, dt_vec / _K, _pm_steps, _gain_cond=_gcond, res_noise=_res_noise, x0_cond=_x0_cond, x0_start_noise=_x0_sn, cfg_w=_cfg_w, n_avg=_eval_args.n_avg, subspace=_sub, delta_scale=_eval_args.fm_delta_scale, energy=_energy, postmask=_postmask, controlnet=controlnet, cnet_prior=_cnet_prior, cond_vec=_cvk, hist_cat=_hk, return_latent=True)
                 _prev_lat, _prev_fu = _z_cur, _b["starting_follow_up"]
                 _z_cur = _z_nx
             with torch.no_grad():
                 x_pred = autoencoder.decode(_z_cur.to(DEVICE)).float().cpu()
         else:
             x_pred = sample(flowmatching, autoencoder, z0, context, age_gap, scale_factor,
-                            args.fm_scheme, dt_vec, _eval_args.infer_steps, _gain_cond=_gcond, res_noise=_res_noise, x0_cond=_x0_cond, x0_start_noise=_x0_sn, cfg_w=_cfg_w, n_avg=_eval_args.n_avg, subspace=_sub, delta_scale=_eval_args.fm_delta_scale, energy=_energy, postmask=_postmask, controlnet=controlnet, cnet_prior=_cnet_prior, cond_vec=_cv, hist_cat=_hcat)
+                            args.fm_scheme, dt_vec, _pm_steps, _gain_cond=_gcond, res_noise=_res_noise, x0_cond=_x0_cond, x0_start_noise=_x0_sn, cfg_w=_cfg_w, n_avg=_eval_args.n_avg, subspace=_sub, delta_scale=_eval_args.fm_delta_scale, energy=_energy, postmask=_postmask, controlnet=controlnet, cnet_prior=_cnet_prior, cond_vec=_cv, hist_cat=_hcat)
         with torch.no_grad():
             x_in = autoencoder.decode(z0).float().cpu()      # baseline (decoded starting latent)
             x_tg = autoencoder.decode(z1).float().cpu()      # GT followup (decoded real latent)
@@ -1367,7 +1410,7 @@ def main():
         keys = [k for k in rows[0].keys() if k != "pid"]
         return {k: round(float(np.nanmean([r[k] for r in rows])), 4) for k in keys}
 
-    out = {"tag": _eval_args.tag, "scheme": args.fm_scheme, "fm_scale_norm": int(getattr(args, "fm_scale_norm", 1)),
+    out = {"pm_dt_step": _PM_DT_STEP, "tag": _eval_args.tag, "scheme": args.fm_scheme, "fm_scale_norm": int(getattr(args, "fm_scale_norm", 1)),
            "fm_sigma": float(getattr(args, "fm_sigma", 0.0)), "ckpt": _eval_args.fm_ckpt,
            # The sampling settings below must be recorded with every result, otherwise the operating point of a result file cannot be recovered and the delta curve is not reproducible.
            "fm_delta_scale": float(getattr(_eval_args, "fm_delta_scale", 1.0)),
